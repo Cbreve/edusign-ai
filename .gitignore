@@ -1,1 +1,4 @@
 <FILE_CONTENT>
+# Large raw assets (tracked elsewhere)
+backend/app/data/raw/*.pdf
+backend/app/data/raw/sign_images/
