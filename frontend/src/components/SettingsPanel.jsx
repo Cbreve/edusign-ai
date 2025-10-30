@@ -1,0 +1,1 @@
+export default function SettingsPanel(){return (<div>SettingsPanel</div>)}

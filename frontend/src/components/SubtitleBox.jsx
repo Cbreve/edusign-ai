@@ -1,0 +1,1 @@
+export default function SubtitleBox(){return (<div>SubtitleBox</div>)}

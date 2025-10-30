@@ -1,0 +1,1 @@
+export default function SpeechInput(){return (<div>SpeechInput</div>)}

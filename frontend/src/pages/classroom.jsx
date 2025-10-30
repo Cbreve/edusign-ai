@@ -1,0 +1,1 @@
+export default function Classroom(){return (<div>Classroom view</div>)}

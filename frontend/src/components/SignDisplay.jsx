@@ -1,0 +1,1 @@
+export default function SignDisplay(){return (<div>SignDisplay</div>)}
