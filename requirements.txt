@@ -1,1 +1,8 @@
-<FILE_CONTENT>
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+numpy==2.1.1
+pydantic==2.9.2
+pdfplumber==0.11.4
+pymupdf==1.24.9
+pytesseract==0.3.13
+Pillow==10.4.0
