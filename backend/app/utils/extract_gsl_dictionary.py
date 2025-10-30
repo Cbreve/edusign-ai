@@ -5,6 +5,7 @@ import json
 from uuid import uuid4
 from datetime import datetime
 from typing import List, Tuple, Dict, Any, Optional
+import sys
 
 # Optional deps (graceful fallback)
 try:
@@ -450,6 +451,10 @@ def main() -> None:
     if os.path.exists(gold_path):
         report = validate_against_gold(entries, gold_path)
         print("Gold validation:", json.dumps(report, ensure_ascii=False))
+        if os.getenv("FAIL_ON_GOLD_MISSING") == "1":
+            if isinstance(report, dict) and report.get("missing", 0) > 0:
+                print("Gold validation failed: missing items detected", file=sys.stderr)
+                sys.exit(1)
 
 
 if __name__ == "__main__":
