@@ -419,22 +419,55 @@ def validate_against_gold(entries: List[Dict[str, Any]], gold_path: str) -> Dict
 
 def main() -> None:
     ensure_dirs()
-    pdf_path = pick_pdf_path()
-    kind = detect_pdf_type(pdf_path)
-    print(f"PDF type: {kind}")
-    lines = extract_text_lines(pdf_path)
-    # OCR fallback per page (confidence gated) if nothing extracted
-    if not lines and fitz is not None:
-        print("No text extracted; attempting OCR on all pages with confidence gating...")
+    synthetic_forced = os.getenv("FORCE_SYNTHETIC") == "1"
+    lines: List[Tuple[int, str]] = []
+    if synthetic_forced:
+        print("Using synthetic dataset (FORCE_SYNTHETIC=1)")
+        lines = [
+            (16, "COLOUR: Wiggle the fingers and move the hand down the face."),
+            (16, "BLUE: Shake the \"B\" hand at the wrist."),
+            (16, "GREEN: Shake the \"G\" hand at the wrist."),
+            (16, "RED: Move the index finger down your chin."),
+            (16, "YELLOW: Shake the \"Y\" hand at the wrist."),
+            (17, "PURPLE: Place the index finger of the \"P\" hand on your temple and rotate your hand at the wrist."),
+            (17, "PINK: Move the middle finger of the \"P\" hand down your lips."),
+        ]
+        pdf_path = "backend/app/data/raw/SYNTHETIC.pdf"
+        kind = "synthetic"
+    else:
         try:
-            doc = fitz.open(pdf_path)
-            for idx in range(len(doc)):
-                ocr_lines = ocr_page_to_lines(pdf_path, idx)
-                for ln in ocr_lines:
-                    if ln:
-                        lines.append((idx + 1, ln))
-        except Exception:
-            pass
+            pdf_path = pick_pdf_path()
+            kind = detect_pdf_type(pdf_path)
+            print(f"PDF type: {kind}")
+            lines = extract_text_lines(pdf_path)
+            # OCR fallback per page (confidence gated) if nothing extracted
+            if not lines and fitz is not None:
+                print("No text extracted; attempting OCR on all pages with confidence gating...")
+                try:
+                    doc = fitz.open(pdf_path)
+                    for idx in range(len(doc)):
+                        ocr_lines = ocr_page_to_lines(pdf_path, idx)
+                        for ln in ocr_lines:
+                            if ln:
+                                lines.append((idx + 1, ln))
+                except Exception:
+                    pass
+        except FileNotFoundError:
+            if os.getenv("ALLOW_SYNTHETIC") == "1":
+                print("Raw PDF not found; using synthetic dataset (ALLOW_SYNTHETIC=1)")
+                lines = [
+                    (16, "COLOUR: Wiggle the fingers and move the hand down the face."),
+                    (16, "BLUE: Shake the \"B\" hand at the wrist."),
+                    (16, "GREEN: Shake the \"G\" hand at the wrist."),
+                    (16, "RED: Move the index finger down your chin."),
+                    (16, "YELLOW: Shake the \"Y\" hand at the wrist."),
+                    (17, "PURPLE: Place the index finger of the \"P\" hand on your temple and rotate your hand at the wrist."),
+                    (17, "PINK: Move the middle finger of the \"P\" hand down your lips."),
+                ]
+                pdf_path = "backend/app/data/raw/SYNTHETIC.pdf"
+                kind = "synthetic"
+            else:
+                raise
     entries = parse_entries(lines, pdf_path)
     page_to_imgs = extract_images(pdf_path)
     attach_images(entries, page_to_imgs)

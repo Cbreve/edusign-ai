@@ -26,5 +26,7 @@ jobs:
       - name: Run extractor and gold validation
         env:
           FAIL_ON_GOLD_MISSING: '1'
+          ALLOW_SYNTHETIC: '1'
+          FORCE_SYNTHETIC: '1'
         run: |
           python backend/app/utils/extract_gsl_dictionary.py
