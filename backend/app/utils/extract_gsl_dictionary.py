@@ -25,6 +25,9 @@ RAW_PDF_FALLBACK = os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 PROCESSED_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "processed"))
 IMAGES_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "raw", "sign_images"))
 
+# Heuristic: ignore likely front matter pages to reduce noise
+FRONT_MATTER_CUTOFF_PAGE = 10
+
 
 def ensure_dirs() -> None:
     os.makedirs(PROCESSED_DIR, exist_ok=True)
@@ -77,6 +80,13 @@ DROP_SUBSTRINGS = {
     "PREFACE", "FOREWORD", "ACKNOWLEDGEMENT", "ACKNOWLEDGEMENTS", "COPYRIGHT", "CONTENTS",
     "INDEX", "INTRODUCTION", "TABLE OF CONTENTS", "LIST OF FIGURES", "LIST OF TABLES",
     "GLOSSARY", "BIBLIOGRAPHY", "APPENDIX", "HARMONIZED GSL DICTIONARY", "GSL DICTIONARY",
+    "GOVERNMENT OF GHANA", "MINISTRY", "GHANA", "EDITION", "PUBLISHED", "AUTHOR", "AUTHORS",
+}
+
+# Additional noise terms to exclude when they appear as signs
+NOISE_SIGN_TERMS = {
+    "DICTIONARY", "COPYRIGHT", "GOVERNMENT", "GHANA", "PUBLISHED", "EDITION", "FOREWORD",
+    "PREFACE", "ACKNOWLEDGEMENT", "ACKNOWLEDGEMENTS", "MINISTRY", "SERVICE", "SCHOOL",
 }
 
 
@@ -85,9 +95,37 @@ def normalize_sign(text: str) -> str:
 
 
 def normalize_meaning(text: str) -> str:
-    t = re.sub(r"\s+", " ", text).strip()
+    # fix smart punctuation and dashes, remove extra spaces
+    t = text.replace("\u2013", "-").replace("\u2014", "-")
+    t = t.replace("\u2018", "'").replace("\u2019", "'").replace("\u201c", '"').replace("\u201d", '"')
+    # collapse spaces
+    t = re.sub(r"\s+", " ", t).strip()
     # ensure sentence-like
     return t
+
+
+def is_noise_sign(sign: str) -> bool:
+    tokens = [t for t in sign.split() if t]
+    if len(tokens) > 4:  # overly long sign names are often headings
+        return True
+    if any(term in sign for term in NOISE_SIGN_TERMS):
+        return True
+    # reject signs that are mostly punctuation/symbols
+    if len(re.sub(r"[A-Z0-9\s\-\,\(\)\/]", "", sign)) > 0:
+        return True
+    return False
+
+
+def is_noise_meaning(meaning: str) -> bool:
+    # must contain lowercase letters and at least 3 words to be sentence-like
+    if not re.search(r"[a-z]", meaning):
+        return True
+    if len(meaning.split()) < 3:
+        return True
+    # exclude boilerplate legal/metadata lines
+    if any(term in meaning.upper() for term in ["COPYRIGHT", "ALL RIGHTS RESERVED", "PUBLISHED BY", "MINISTRY"]):
+        return True
+    return False
 
 
 def parse_entries(lines: List[Tuple[int, str]], source_pdf: str) -> List[Dict[str, Any]]:
@@ -101,7 +139,24 @@ def parse_entries(lines: List[Tuple[int, str]], source_pdf: str) -> List[Dict[st
         if not buffer_sign:
             return
         meaning = normalize_meaning(" ".join(buffer_meaning_parts).strip())
+        # page-based filter to avoid front matter noise
+        if (buffer_page or 0) < FRONT_MATTER_CUTOFF_PAGE:
+            buffer_sign = None
+            buffer_meaning_parts = []
+            buffer_page = None
+            return
+        # content-based noise checks
         if not meaning or re.search(r"^[A-Z\s\-\,\(\)\/]+$", meaning):
+            buffer_sign = None
+            buffer_meaning_parts = []
+            buffer_page = None
+            return
+        if is_noise_sign(buffer_sign):
+            buffer_sign = None
+            buffer_meaning_parts = []
+            buffer_page = None
+            return
+        if is_noise_meaning(meaning):
             buffer_sign = None
             buffer_meaning_parts = []
             buffer_page = None
