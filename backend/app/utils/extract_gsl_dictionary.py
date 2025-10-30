@@ -17,6 +17,13 @@ try:
 except Exception:
     fitz = None  # type: ignore
 
+try:
+    import pytesseract  # type: ignore
+    from PIL import Image  # type: ignore
+except Exception:
+    pytesseract = None  # type: ignore
+    Image = None  # type: ignore
+
 
 WORKSPACE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 RAW_PDF = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "raw", "Harmonized_GSL_Dictionary_v3_2023.pdf"))
@@ -24,6 +31,7 @@ RAW_PDF_FALLBACK = os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 PROCESSED_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "processed"))
 IMAGES_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "raw", "sign_images"))
+GOLD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "gold"))
 
 # Heuristic: ignore likely front matter pages to reduce noise
 FRONT_MATTER_CUTOFF_PAGE = 10
@@ -32,6 +40,7 @@ FRONT_MATTER_CUTOFF_PAGE = 10
 def ensure_dirs() -> None:
     os.makedirs(PROCESSED_DIR, exist_ok=True)
     os.makedirs(IMAGES_DIR, exist_ok=True)
+    os.makedirs(GOLD_DIR, exist_ok=True)
 
 
 def pick_pdf_path() -> str:
@@ -62,13 +71,103 @@ def extract_text_lines(pdf_path: str) -> List[Tuple[int, str]]:
         return lines
     with pdfplumber.open(pdf_path) as pdf:
         for i, page in enumerate(pdf.pages, start=1):
-            text = page.extract_text() or ""
-            for raw_line in text.splitlines():
-                ln = raw_line.strip()
-                if not ln:
-                    continue
-                lines.append((i, ln))
+            # column-aware: use words with coordinates and split into columns
+            try:
+                words = page.extract_words(x_tolerance=2, y_tolerance=3) or []
+            except Exception:
+                words = []
+            if words:
+                # heuristic two-column split by page mid x
+                mid_x = (page.bbox[0] + page.bbox[2]) / 2.0
+                left_words = [w for w in words if float(w.get("x0", 0)) < mid_x]
+                right_words = [w for w in words if float(w.get("x0", 0)) >= mid_x]
+
+                def words_to_lines(ws: List[Dict[str, Any]]) -> List[str]:
+                    if not ws:
+                        return []
+                    # group by line using y0 proximity
+                    ws_sorted = sorted(ws, key=lambda w: (round(float(w.get("top", 0))/3)*3, float(w.get("x0", 0))))
+                    lines_acc: List[List[str]] = []
+                    last_top: Optional[float] = None
+                    cur: List[str] = []
+                    for w in ws_sorted:
+                        top = float(w.get("top", 0))
+                        text = (w.get("text") or "").strip()
+                        if not text:
+                            continue
+                        if last_top is None or abs(top - last_top) <= 5:
+                            cur.append(text)
+                            last_top = top if last_top is None else (last_top + top) / 2
+                        else:
+                            if cur:
+                                lines_acc.append(cur)
+                            cur = [text]
+                            last_top = top
+                    if cur:
+                        lines_acc.append(cur)
+                    return [" ".join(parts).strip() for parts in lines_acc if parts]
+
+                left_lines = words_to_lines(left_words)
+                right_lines = words_to_lines(right_words)
+                for ln in left_lines + right_lines:  # read left column fully, then right
+                    if ln:
+                        lines.append((i, ln))
+            else:
+                text = page.extract_text() or ""
+                for raw_line in text.splitlines():
+                    ln = raw_line.strip()
+                    if not ln:
+                        continue
+                    lines.append((i, ln))
     return lines
+
+
+def ocr_page_to_lines(pdf_path: str, page_index: int, conf_threshold: int = 70) -> List[str]:
+    if fitz is None or pytesseract is None or Image is None:
+        return []
+    try:
+        doc = fitz.open(pdf_path)
+        page = doc[page_index]
+        pix = page.get_pixmap(dpi=300)
+        img_data = pix.tobytes("png")
+        from io import BytesIO
+        img = Image.open(BytesIO(img_data))
+        data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+        n = len(data.get("text", []))
+        words = []
+        for idx in range(n):
+            txt = (data["text"][idx] or "").strip()
+            conf = int(data.get("conf", ["-1"])[idx]) if str(data.get("conf", ["-1"])[idx]).isdigit() else -1
+            if not txt or conf < conf_threshold:
+                continue
+            top = int(data.get("top", [0])[idx])
+            left = int(data.get("left", [0])[idx])
+            words.append({"text": txt, "top": top, "x0": left})
+        if not words:
+            return []
+        # group into lines similar to words_to_lines above
+        words_sorted = sorted(words, key=lambda w: (round(float(w.get("top", 0))/3)*3, float(w.get("x0", 0))))
+        lines_acc: List[List[str]] = []
+        last_top: Optional[float] = None
+        cur: List[str] = []
+        for w in words_sorted:
+            top = float(w.get("top", 0))
+            text = (w.get("text") or "").strip()
+            if not text:
+                continue
+            if last_top is None or abs(top - last_top) <= 8:
+                cur.append(text)
+                last_top = top if last_top is None else (last_top + top) / 2
+            else:
+                if cur:
+                    lines_acc.append(cur)
+                cur = [text]
+                last_top = top
+        if cur:
+            lines_acc.append(cur)
+        return [" ".join(parts).strip() for parts in lines_acc if parts]
+    except Exception:
+        return []
 
 
 SIGN_SEP = re.compile(r"^\s*([A-Z0-9\s\-\,\(\)\/]+?)\s*[:\–\-—]\s*(.+)$")
@@ -293,15 +392,48 @@ def save_outputs(entries: List[Dict[str, Any]]) -> Tuple[str, str]:
     return json_path, csv_path
 
 
+def validate_against_gold(entries: List[Dict[str, Any]], gold_path: str) -> Dict[str, Any]:
+    report = {"gold_items": 0, "found": 0, "missing": 0, "missing_items": []}
+    try:
+        with open(gold_path, "r", encoding="utf-8") as f:
+            gold = json.load(f)
+    except Exception:
+        return {"error": f"No gold file at {gold_path}"}
+    report["gold_items"] = len(gold)
+    by_sign = {e["sign"]: e for e in entries}
+    for g in gold:
+        sign = g.get("sign", "").upper()
+        expected = g.get("meaning_contains", "").lower()
+        ok = False
+        e = by_sign.get(sign)
+        if e and expected and expected in e.get("meaning", "").lower():
+            ok = True
+        if ok:
+            report["found"] += 1
+        else:
+            report["missing"] += 1
+            report["missing_items"].append(g)
+    return report
+
+
 def main() -> None:
     ensure_dirs()
     pdf_path = pick_pdf_path()
     kind = detect_pdf_type(pdf_path)
     print(f"PDF type: {kind}")
-    if kind != "text":
-        print("Warning: falling back to text extraction attempt; OCR is not enabled in this script run.")
-
     lines = extract_text_lines(pdf_path)
+    # OCR fallback per page (confidence gated) if nothing extracted
+    if not lines and fitz is not None:
+        print("No text extracted; attempting OCR on all pages with confidence gating...")
+        try:
+            doc = fitz.open(pdf_path)
+            for idx in range(len(doc)):
+                ocr_lines = ocr_page_to_lines(pdf_path, idx)
+                for ln in ocr_lines:
+                    if ln:
+                        lines.append((idx + 1, ln))
+        except Exception:
+            pass
     entries = parse_entries(lines, pdf_path)
     page_to_imgs = extract_images(pdf_path)
     attach_images(entries, page_to_imgs)
@@ -312,6 +444,12 @@ def main() -> None:
     print(f"Total entries: {len(entries)}")
     for sample in entries[:5]:
         print({k: sample[k] for k in ("sign", "meaning", "page")})
+
+    # Quality validation against gold set (if present)
+    gold_path = os.path.join(GOLD_DIR, "gsl_gold.json")
+    if os.path.exists(gold_path):
+        report = validate_against_gold(entries, gold_path)
+        print("Gold validation:", json.dumps(report, ensure_ascii=False))
 
 
 if __name__ == "__main__":
