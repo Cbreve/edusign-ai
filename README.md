@@ -1,27 +1,83 @@
-# EduSign-AI
+# EduSign AI
 
-This repository contains extraction utilities and datasets for the Harmonized GSL Dictionary.
+Real-time speech-to-sign-language translation platform for the deaf community.
 
-## Processed outputs
-- `backend/app/data/processed/gsl_dictionary.json`
-- `backend/app/data/processed/gsl_dictionary.csv`
+## Project Structure
 
-## Raw data (not stored in Git)
-Large raw assets (PDFs, extracted images) are intentionally not tracked in Git to keep the repository lightweight and within platform limits.
-
-- Place the raw PDF at `backend/app/data/raw/Harmonized_GSL_Dictionary_v3_2023.pdf` (or `Harmonized_GSL_Dictionary.pdf`).
-- The `.gitignore` prevents committing large PDFs and `sign_images/`.
-- If the raw file is needed by multiple contributors, share it via external storage (e.g., Drive/S3) and download locally before running the extractor.
-
-## Running the extractor
 ```
-python backend/app/utils/extract_gsl_dictionary.py
+EduSign-AI/
+├── backend/          # FastAPI backend (AI & API)
+├── frontend/         # Next.js frontend
+├── integrations/     # SDKs for Zoom, Google Meet, Teams
+├── scripts/          # Data processing and utility scripts
+└── docs/             # Documentation and guides
 ```
-This generates the processed JSON/CSV and prints a brief summary.
 
-## Data quality checks
-- The extractor applies noise filters, column-aware parsing, optional OCR fallback with confidence gating, and adds metadata per entry.
-- A small gold set lives at `backend/app/data/gold/gsl_gold.json`. The CI workflow validates extractor output against this set and fails when any item is missing.
+## Quick Start
 
-## CI
-GitHub Actions workflow (`.github/workflows/quality.yml`) installs dependencies, runs the extractor, and validates against the gold set on every push/PR to `main`.
+### Backend (Python/FastAPI)
+```bash
+cd backend
+pip install -r ../requirements.txt
+uvicorn app.main:app --reload
+```
+
+### Frontend (Next.js)
+```bash
+npm install
+npm run dev
+```
+
+## Dataset Management
+
+### Extracting Sign Images from GSL Dictionary PDF
+```bash
+python scripts/extract_gsl_sign_images.py
+```
+
+### Extracting Dictionary Data
+```bash
+python scripts/extract_gsl_dictionary.py
+```
+
+### Quality Assurance
+```bash
+python scripts/dataset_quality_assurance.py
+python scripts/validate_sign_images.py
+python scripts/validate_video_frames.py
+```
+
+### YouTube Video Processing
+```bash
+# Download videos
+python scripts/download_youtube_sign_videos.py
+
+# Extract frames
+python scripts/extract_frames_from_videos.py
+
+# Validate frames
+python scripts/validate_video_frames.py
+```
+
+## Data Structure
+
+- **Raw Data**: `backend/app/data/raw/`
+  - `sign_images/` - Extracted sign images from PDF
+  - `youtube_videos/` - Downloaded YouTube videos
+  - `video_frames/` - Extracted video frames
+  - `Harmonized_GSL_Dictionary.pdf`
+
+- **Processed Data**: `backend/app/data/processed/`
+  - `gsl_dictionary.json` - Dictionary entries
+  - `validated_frames/` - Quality-validated frames
+
+## Documentation
+
+See `docs/` for detailed guides:
+- `DATASET_QUALITY_GUIDE.md` - Dataset quality best practices
+- `YOUTUBE_DATASET_GUIDE.md` - YouTube video processing guide
+- `api_documentation.md` - Backend API reference
+
+## Note on Large Files
+
+Large raw assets (PDFs, videos, images) are intentionally not tracked in Git (see `.gitignore`). Share via external storage if needed.

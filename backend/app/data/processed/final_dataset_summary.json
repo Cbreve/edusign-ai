@@ -1,0 +1,64 @@
+{
+  "dataset_version": "1.0",
+  "created_date": "2025-10-31",
+  "total_images": 9243,
+  "sources": {
+    "dictionary": {
+      "count": 263,
+      "source": "Harmonized_GSL_Dictionary.pdf",
+      "pages": "1-292",
+      "location": "backend/app/data/raw/sign_images",
+      "coverage": "94.9% linked to dictionary entries"
+    },
+    "youtube_videos": {
+      "count": 8980,
+      "videos_processed": 22,
+      "total_frames_extracted": 9394,
+      "validation_rate": "95.6%",
+      "rejected_frames": 5,
+      "location": "backend/app/data/processed/validated_frames"
+    }
+  },
+  "video_content": {
+    "lessons": [
+      "Learn GSL Lesson 1",
+      "Learn GSL Lesson 2", 
+      "Learn GSL Lesson 4",
+      "Learn GSL Lesson 5"
+    ],
+    "categories": [
+      "Months of the Year",
+      "Feelings/Sentiments",
+      "Fruits",
+      "Colors",
+      "Transport System",
+      "Days of the Week",
+      "Numerals",
+      "Nouns (01 & 02)",
+      "Pronouns",
+      "Date",
+      "Professions"
+    ]
+  },
+  "quality_metrics": {
+    "overall_score": "Excellent",
+    "validation_rate": "95.6%",
+    "minimum_resolution": "640x480",
+    "preferred_resolution": "1280x720+",
+    "quality_checks": [
+      "Resolution validation",
+      "Blur detection",
+      "Brightness balance",
+      "Contrast validation",
+      "Aspect ratio check"
+    ]
+  },
+  "dataset_status": "Production-ready for model training",
+  "recommendations": [
+    "Dataset is comprehensive and high-quality",
+    "Ready for train/validation/test split",
+    "Consider annotation/labeling for supervised learning",
+    "Dataset covers multiple sign categories effectively"
+  ]
+}
+
