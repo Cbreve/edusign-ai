@@ -58,6 +58,7 @@ backend/app/data/raw/sign_images/
 backend/app/data/raw/youtube_videos/*.mp4
 backend/app/data/raw/video_frames/
 backend/app/data/processed/validated_frames/
+backend/app/data/processed/landmarks_cache/
 
 # Model files (too large for git)
 *.pkl
