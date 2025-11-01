@@ -67,9 +67,17 @@ backend/app/data/processed/validated_frames/
 *.ckpt
 backend/app/models/vit_model/*.bin
 backend/app/models/vit_model/*.safetensors
+backend/app/models/checkpoints/
+backend/app/models/archived/
+backend/app/models/wlasl_pretrained.zip
 
 # Logs and temporary files
 *.log
 *.tmp
 temp/
 tmp/
+
+# Data processing reports (can be regenerated)
+backend/app/data/processed/*_report.json
+backend/app/data/processed/*_summary.json
+backend/app/data/processed/qa_report.json

@@ -71,9 +71,47 @@ python scripts/validate_video_frames.py
   - `gsl_dictionary.json` - Dictionary entries
   - `validated_frames/` - Quality-validated frames
 
+## Model Training
+
+### Preprocessing
+```bash
+# Pre-extract and cache landmarks (one-time, ~15 minutes)
+python scripts/preprocess_landmarks.py
+```
+
+### Fine-Tuning
+```bash
+# Fine-tune with WLASL pretrained model
+python scripts/train_edusign_gsl.py \
+    --pretrained-model backend/app/models/pretrained_wlasl.pth \
+    --epochs 50 \
+    --batch-size 16 \
+    --fine-tune-lr 0.0001
+```
+
+### Testing
+```bash
+# Test single frame
+python scripts/inference_edusign_gsl.py \
+    --model backend/app/models/edusign_gsl_finetuned.pth \
+    --input <frame.jpg> \
+    --top-k 5
+
+# Batch test
+python scripts/batch_test_model.py 20
+```
+
+**Current Model Performance:**
+- Validation Accuracy: 95.45%
+- Classes: 1,485 GSL signs
+- Model: `backend/app/models/edusign_gsl_finetuned.pth`
+
 ## Documentation
 
 See `docs/` for detailed guides:
+- `TRAINING_GUIDE.md` - Model training instructions
+- `FINETUNING_GUIDE.md` - Fine-tuning with WLASL
+- `TRAINING_SUMMARY.md` - Training results summary
 - `DATASET_QUALITY_GUIDE.md` - Dataset quality best practices
 - `YOUTUBE_DATASET_GUIDE.md` - YouTube video processing guide
 - `api_documentation.md` - Backend API reference
