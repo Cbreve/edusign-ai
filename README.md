@@ -239,11 +239,23 @@ Large raw assets (PDFs, videos, images, models) are intentionally not tracked in
 
 ```
 EduSign-AI/
-├── backend/          # FastAPI backend (AI & API)
-├── frontend/         # Next.js frontend
-├── integrations/     # SDKs for Zoom, Google Meet, Teams
-├── scripts/          # Data processing and training scripts
-└── docs/             # Project documentation
+├── backend/                    # FastAPI backend (AI & API)
+│   ├── app/
+│   │   ├── models/            # Trained ML models
+│   │   ├── services/          # Business logic (avatar, sign recognition)
+│   │   └── routes/            # API endpoints
+│   └── data/                   # Datasets and processed data
+├── frontend/                   # Next.js frontend
+│   ├── public/
+│   │   └── avatar_models/      # 3D avatar files (Ready Player Me)
+│   │       └── ready-player-me/
+│   │           ├── models/     # .glb/.gltf files
+│   │           ├── textures/   # Texture maps
+│   │           └── animations/ # Sign language animations
+│   └── src/                    # React components and pages
+├── integrations/               # SDKs for Zoom, Google Meet, Teams
+├── scripts/                    # Data processing and training scripts
+└── docs/                       # Project documentation
 ```
 
 ---
