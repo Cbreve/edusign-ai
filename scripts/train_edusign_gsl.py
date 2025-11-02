@@ -15,9 +15,11 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, TYPE_CHECKING
 from datetime import datetime
 import warnings
+from collections import Counter
+import random
 
 import numpy as np
 import cv2
@@ -28,7 +30,7 @@ try:
     import torch
     import torch.nn as nn
     import torch.optim as optim
-    from torch.utils.data import Dataset, DataLoader
+    from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
     from torchvision import transforms
     TORCH_AVAILABLE = True
 except ImportError:
@@ -41,6 +43,37 @@ try:
 except ImportError:
     MEDIAPIPE_AVAILABLE = False
     print("Warning: MediaPipe not installed. Install with: pip install mediapipe")
+
+# Import our custom modules
+LandmarkAugmenter = None
+get_augmenter = None
+FocalLoss = None
+LabelSmoothingCrossEntropy = None
+CombinedLoss = None
+calculate_class_weights = None
+get_loss_function = None
+FullI3D = None
+HybridI3D = None
+get_i3d_model = None
+
+try:
+    from scripts.data_augmentation import LandmarkAugmenter, get_augmenter
+    from scripts.loss_functions import (
+        FocalLoss, LabelSmoothingCrossEntropy, CombinedLoss,
+        calculate_class_weights, get_loss_function
+    )
+    from scripts.i3d_architecture import FullI3D, HybridI3D, get_i3d_model
+    I3D_AVAILABLE = True
+    AUGMENTATION_AVAILABLE = True
+except ImportError as e:
+    AUGMENTATION_AVAILABLE = False
+    I3D_AVAILABLE = False
+    print(f"Warning: Custom modules not found. Using basic training. Error: {e}")
+    # Create dummy types for type hints
+    from typing import TYPE_CHECKING
+    if TYPE_CHECKING:
+        from typing import Any
+        LandmarkAugmenter = Any
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
@@ -185,44 +218,62 @@ class MediaPipeLandmarkExtractor:
 
 class SimpleI3D(nn.Module):
     """
-    Simplified I3D-like architecture for sign recognition.
+    Improved I3D-like architecture for sign recognition.
     
-    This is a simplified version of the Inflated 3D ConvNet (I3D) architecture
-    commonly used in WLASL. For production, use a pretrained I3D model.
+    Enhanced with better regularization and feature extraction.
     """
     
-    def __init__(self, input_features: int = 225, num_classes: int = 100, hidden_dim: int = 512):
+    def __init__(
+        self,
+        input_features: int = 225,
+        num_classes: int = 100,
+        hidden_dim: int = 512,
+        dropout_rate: float = 0.3,
+        lstm_layers: int = 2,
+        use_batch_norm: bool = True
+    ):
         super(SimpleI3D, self).__init__()
         
         self.input_features = input_features
         self.num_classes = num_classes
+        self.use_batch_norm = use_batch_norm
         
-        # Feature extraction layers
-        self.feature_extractor = nn.Sequential(
-            nn.Linear(input_features, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-        )
+        # Enhanced feature extraction with batch normalization
+        layers = []
+        layers.append(nn.Linear(input_features, hidden_dim))
+        if use_batch_norm:
+            layers.append(nn.BatchNorm1d(hidden_dim))
+        layers.append(nn.ReLU())
+        layers.append(nn.Dropout(dropout_rate))
+        
+        layers.append(nn.Linear(hidden_dim, hidden_dim))
+        if use_batch_norm:
+            layers.append(nn.BatchNorm1d(hidden_dim))
+        layers.append(nn.ReLU())
+        layers.append(nn.Dropout(dropout_rate))
+        
+        self.feature_extractor = nn.Sequential(*layers)
         
         # Temporal modeling (LSTM for sequence understanding)
         self.lstm = nn.LSTM(
             input_size=hidden_dim,
             hidden_size=hidden_dim,
-            num_layers=2,
+            num_layers=lstm_layers,
             batch_first=True,
-            dropout=0.3,
+            dropout=dropout_rate if lstm_layers > 1 else 0,
             bidirectional=True
         )
         
-        # Classification head
+        # Enhanced classification head
         self.classifier = nn.Sequential(
             nn.Linear(hidden_dim * 2, hidden_dim),  # *2 for bidirectional
+            nn.BatchNorm1d(hidden_dim) if use_batch_norm else nn.Identity(),
             nn.ReLU(),
             nn.Dropout(0.4),
-            nn.Linear(hidden_dim, num_classes)
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(hidden_dim // 2, num_classes)
         )
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -238,8 +289,10 @@ class SimpleI3D(nn.Module):
         batch_size, seq_len, features = x.shape
         
         # Extract features for each frame
+        # Reshape to (batch * seq_len, features) for linear layers
         x_reshaped = x.view(-1, features)
         features_out = self.feature_extractor(x_reshaped)
+        # Reshape back to (batch, seq_len, hidden_dim)
         features_out = features_out.view(batch_size, seq_len, -1)
         
         # Temporal modeling with LSTM
@@ -256,9 +309,10 @@ class SimpleI3D(nn.Module):
 
 class GSLDataset(Dataset):
     """
-    Dataset for GSL sign recognition.
+    Dataset for GSL sign recognition with augmentation support.
     
     Loads video frames, extracts MediaPipe landmarks, and pairs them with sign labels.
+    Supports data augmentation and oversampling for rare classes.
     """
     
     def __init__(
@@ -267,11 +321,17 @@ class GSLDataset(Dataset):
         dictionary_path: Path,
         sequence_length: int = 16,
         transform: Optional[transforms.Compose] = None,
-        extractor: Optional[MediaPipeLandmarkExtractor] = None
+        extractor: Optional[MediaPipeLandmarkExtractor] = None,
+        augmenter=None,  # Optional[LandmarkAugmenter]
+        use_augmentation: bool = False,
+        oversample_rare: bool = False,
+        min_samples_per_class: int = 5
     ):
         self.frames_dir = Path(frames_dir)
         self.sequence_length = sequence_length
         self.transform = transform
+        self.use_augmentation = use_augmentation
+        self.augmenter = augmenter
         
         # Load dictionary for label mapping
         with open(dictionary_path, 'r', encoding='utf-8') as f:
@@ -292,7 +352,56 @@ class GSLDataset(Dataset):
         # Build dataset: group frames by video/sign
         self.samples = self._build_samples()
         
+        # Oversample rare classes if requested
+        if oversample_rare:
+            self.samples = self._oversample_rare_classes(min_samples_per_class)
+        
         logger.info(f"Dataset initialized with {len(self.samples)} sequences")
+        
+        # Log class distribution
+        self._log_class_distribution()
+    
+    def _log_class_distribution(self):
+        """Log distribution of classes in dataset."""
+        class_counts = Counter(sample['label'] for sample in self.samples)
+        logger.info(f"Class distribution:")
+        logger.info(f"  Min samples per class: {min(class_counts.values())}")
+        logger.info(f"  Max samples per class: {max(class_counts.values())}")
+        logger.info(f"  Mean samples per class: {sum(class_counts.values()) / len(class_counts):.1f}")
+        rare_count = sum(1 for c in class_counts.values() if c < 5)
+        logger.info(f"  Classes with <5 samples: {rare_count}")
+    
+    def _oversample_rare_classes(self, min_samples: int) -> List[Dict]:
+        """
+        Oversample rare classes to balance dataset.
+        
+        Args:
+            min_samples: Minimum samples per class after oversampling
+            
+        Returns:
+            Augmented sample list
+        """
+        class_counts = Counter(sample['label'] for sample in self.samples)
+        class_samples = {label: [] for label in class_counts.keys()}
+        
+        # Group samples by class
+        for sample in self.samples:
+            class_samples[sample['label']].append(sample)
+        
+        # Oversample
+        augmented_samples = []
+        for label, samples in class_samples.items():
+            augmented_samples.extend(samples)
+            
+            # If class has fewer than min_samples, duplicate samples
+            if len(samples) < min_samples:
+                num_needed = min_samples - len(samples)
+                for _ in range(num_needed):
+                    # Randomly select a sample to duplicate
+                    augmented_samples.append(random.choice(samples))
+        
+        logger.info(f"Oversampling: {len(self.samples)} -> {len(augmented_samples)} samples")
+        return augmented_samples
     
     def _build_samples(self) -> List[Dict]:
         """
@@ -370,6 +479,7 @@ class GSLDataset(Dataset):
         Get a sample from the dataset.
         
         Uses cached landmarks if available (much faster), otherwise extracts on-the-fly.
+        Applies augmentation if enabled.
         
         Returns:
             (landmarks_sequence, label, sign_name)
@@ -405,8 +515,17 @@ class GSLDataset(Dataset):
             
             landmarks_sequence.append(landmarks)
         
-        # Convert to tensor
+        # Convert to numpy array
         landmarks_array = np.array(landmarks_sequence, dtype=np.float32)
+        
+        # Apply augmentation if enabled (only during training)
+        if self.use_augmentation and self.augmenter is not None:
+            landmarks_array = self.augmenter.augment_sequence(
+                landmarks_array,
+                label=sample['label']
+            )
+        
+        # Convert to tensor
         landmarks_tensor = torch.from_numpy(landmarks_array)
         
         return landmarks_tensor, sample['label'], sample['sign']
@@ -451,7 +570,16 @@ def load_pretrained_model(
         state_dict = checkpoint
     
     # Create new model with GSL number of classes
-    model = SimpleI3D(input_features=225, num_classes=num_classes, hidden_dim=512)
+    # Try to determine architecture from pretrained model if possible
+    # For now, use SimpleI3D for compatibility
+    model = SimpleI3D(
+        input_features=225,
+        num_classes=num_classes,
+        hidden_dim=512,
+        dropout_rate=0.3,
+        lstm_layers=2,
+        use_batch_norm=True
+    )
     
     # Try to load compatible weights (skip incompatible layers)
     model_dict = model.state_dict()
@@ -492,9 +620,26 @@ def train_epoch(
     optimizer: optim.Optimizer,
     criterion: nn.Module,
     device: torch.device,
-    epoch: int
+    epoch: int,
+    use_mixup: bool = False,
+    mixup_alpha: float = 0.2
 ) -> Dict[str, float]:
-    """Train for one epoch."""
+    """
+    Train for one epoch with optional Mixup augmentation.
+    
+    Args:
+        model: Model to train
+        dataloader: Training data loader
+        optimizer: Optimizer
+        criterion: Loss function
+        device: Device to train on
+        epoch: Current epoch number
+        use_mixup: Enable Mixup augmentation
+        mixup_alpha: Mixup alpha parameter
+        
+    Returns:
+        Dictionary with training metrics
+    """
     model.train()
     running_loss = 0.0
     correct = 0
@@ -504,13 +649,39 @@ def train_epoch(
         landmarks = landmarks.to(device)
         labels = labels.to(device)
         
-        # Forward pass
-        optimizer.zero_grad()
-        outputs = model(landmarks)
-        loss = criterion(outputs, labels)
+        # Mixup augmentation (if enabled)
+        if use_mixup and AUGMENTATION_AVAILABLE and np.random.random() < 0.5:
+            # Randomly shuffle batch for mixup
+            indices = torch.randperm(landmarks.size(0))
+            landmarks_mixed = landmarks[indices]
+            labels_mixed = labels[indices]
+            
+            # Generate lambda from beta distribution
+            lam = np.random.beta(mixup_alpha, mixup_alpha)
+            
+            # Mix landmarks and labels
+            mixed_landmarks = lam * landmarks + (1 - lam) * landmarks_mixed
+            mixed_labels = (labels, labels_mixed, lam, 1 - lam)
+            
+            optimizer.zero_grad()
+            outputs = model(mixed_landmarks)
+            
+            # Mixup loss: weighted combination
+            loss1 = criterion(outputs, mixed_labels[0])
+            loss2 = criterion(outputs, mixed_labels[1])
+            loss = lam * loss1 + (1 - lam) * loss2
+        else:
+            # Standard training
+            optimizer.zero_grad()
+            outputs = model(landmarks)
+            loss = criterion(outputs, labels)
         
         # Backward pass
         loss.backward()
+        
+        # Gradient clipping for stability
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
         optimizer.step()
         
         # Statistics
@@ -665,6 +836,30 @@ def main():
     parser.add_argument('--fine-tune-lr', type=float, default=None, help='Learning rate for fine-tuning (if different from main LR)')
     parser.add_argument('--device', type=str, default='auto', help='Device (cuda/cpu/auto)')
     
+    # Augmentation arguments
+    parser.add_argument('--augment', action='store_true', default=True, help='Enable data augmentation')
+    parser.add_argument('--augment-noise', type=float, default=0.02, help='Landmark noise std')
+    parser.add_argument('--oversample', action='store_true', default=True, help='Oversample rare classes')
+    parser.add_argument('--min-samples', type=int, default=5, help='Minimum samples per class after oversampling')
+    
+    # Loss function arguments
+    parser.add_argument('--loss', type=str, default='focal', choices=['ce', 'focal', 'smooth', 'combined'], help='Loss function type')
+    parser.add_argument('--focal-gamma', type=float, default=2.0, help='Focal loss gamma parameter')
+    parser.add_argument('--label-smoothing', type=float, default=0.1, help='Label smoothing factor')
+    parser.add_argument('--class-weights', action='store_true', default=True, help='Use class-weighted loss')
+    
+    # Training technique arguments
+    parser.add_argument('--mixup', action='store_true', default=False, help='Enable Mixup augmentation')
+    parser.add_argument('--mixup-alpha', type=float, default=0.2, help='Mixup alpha parameter')
+    parser.add_argument('--scheduler', type=str, default='cosine', choices=['step', 'cosine', 'plateau'], help='LR scheduler type')
+    
+    # Architecture arguments
+    parser.add_argument('--architecture', type=str, default='simple', 
+                       choices=['simple', 'i3d', 'hybrid'],
+                       help='Model architecture: simple (SimpleI3D), i3d (FullI3D), hybrid (HybridI3D)')
+    parser.add_argument('--base-channels', type=int, default=64, help='Base channels for I3D (multiplied for deeper layers)')
+    parser.add_argument('--depth-factor', type=float, default=1.0, help='Depth multiplier for I3D channels (1.0=standard, 0.5=lighter, 2.0=deeper)')
+    
     args = parser.parse_args()
     
     # Setup device
@@ -688,40 +883,61 @@ def main():
     logger.info("Initializing MediaPipe landmark extractor...")
     extractor = MediaPipeLandmarkExtractor()
     
+    # Setup augmentation
+    augmenter = None
+    if args.augment and AUGMENTATION_AVAILABLE:
+        augmenter = get_augmenter(
+            noise_std=args.augment_noise,
+            enable_temporal=True,
+            enable_spatial=True,
+            enable_mixup=False  # Mixup handled separately in training loop
+        )
+        logger.info("Data augmentation enabled")
+    else:
+        logger.info("Data augmentation disabled")
+    
     # Load dataset
     logger.info("Loading dataset...")
     dataset = GSLDataset(
         frames_dir=FRAMES_DIR,
         dictionary_path=DICTIONARY_PATH,
         sequence_length=args.sequence_length,
-        extractor=extractor
+        extractor=extractor,
+        augmenter=augmenter,
+        use_augmentation=args.augment and AUGMENTATION_AVAILABLE,
+        oversample_rare=args.oversample,
+        min_samples_per_class=args.min_samples
     )
     
     if len(dataset) == 0:
         logger.error("No training samples found. Check your data paths.")
         sys.exit(1)
     
-    # Split dataset
+    # Split dataset (stratified split would be better, but random works for now)
     train_size = int(0.8 * len(dataset))
     val_size = len(dataset) - train_size
-    train_dataset, val_dataset = torch.utils.data.random_split(
-        dataset, [train_size, val_size]
+    train_indices, val_indices = torch.utils.data.random_split(
+        range(len(dataset)), [train_size, val_size]
     )
+    
+    # Create subset datasets
+    train_subset = torch.utils.data.Subset(dataset, train_indices.indices)
+    val_subset = torch.utils.data.Subset(dataset, val_indices.indices)
     
     train_loader = DataLoader(
-        train_dataset,
+        train_subset,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=2
+        num_workers=2,
+        pin_memory=True if device.type == 'cuda' else False
     )
     val_loader = DataLoader(
-        val_dataset,
+        val_subset,
         batch_size=args.batch_size,
         shuffle=False,
-        num_workers=2
+        num_workers=2,
+        pin_memory=True if device.type == 'cuda' else False
     )
-    
-    logger.info(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
     
     # Load or initialize model
     if args.pretrained_model:
@@ -735,13 +951,43 @@ def main():
         )
     else:
         logger.info("="*60)
-        logger.info("TRAINING FROM SCRATCH")
+        logger.info(f"TRAINING FROM SCRATCH - Architecture: {args.architecture}")
         logger.info("="*60)
-        model = SimpleI3D(
-            input_features=225,
-            num_classes=dataset.num_classes,
-            hidden_dim=512
-        )
+        
+        if args.architecture == 'i3d' and I3D_AVAILABLE:
+            model = FullI3D(
+                input_features=225,
+                num_classes=dataset.num_classes,
+                base_channels=args.base_channels,
+                depth_factor=args.depth_factor,
+                use_batch_norm=True,
+                dropout_rate=0.3,
+                sequence_length=args.sequence_length
+            )
+            logger.info(f"Using FullI3D architecture (base_channels={args.base_channels}, depth_factor={args.depth_factor})")
+        elif args.architecture == 'hybrid' and I3D_AVAILABLE:
+            model = HybridI3D(
+                input_features=225,
+                num_classes=dataset.num_classes,
+                base_channels=args.base_channels,
+                lstm_hidden=512,
+                use_batch_norm=True,
+                dropout_rate=0.3,
+                sequence_length=args.sequence_length
+            )
+            logger.info(f"Using HybridI3D architecture (base_channels={args.base_channels})")
+        else:
+            if args.architecture != 'simple':
+                logger.warning(f"Requested {args.architecture} architecture but I3D not available. Using SimpleI3D.")
+            model = SimpleI3D(
+                input_features=225,
+                num_classes=dataset.num_classes,
+                hidden_dim=512,
+                dropout_rate=0.3,
+                lstm_layers=2,
+                use_batch_norm=True
+            )
+            logger.info("Using SimpleI3D architecture")
     
     model = model.to(device)
     logger.info(f"Model initialized with {dataset.num_classes} classes")
@@ -751,14 +997,51 @@ def main():
     total_params = sum(p.numel() for p in model.parameters())
     logger.info(f"Trainable parameters: {trainable_params:,} / {total_params:,} ({100*trainable_params/total_params:.1f}%)")
     
-    # Setup training with fine-tuning learning rate if specified
-    criterion = nn.CrossEntropyLoss()
+    # Calculate class weights if requested
+    class_weights = None
+    if args.class_weights and AUGMENTATION_AVAILABLE:
+        logger.info("Calculating class weights...")
+        # Calculate from full dataset
+        class_weights = calculate_class_weights(dataset)
+        class_weights = class_weights.to(device)
+        logger.info(f"Class weights calculated (min: {class_weights.min():.2f}, max: {class_weights.max():.2f})")
+    
+    # Setup loss function
+    if AUGMENTATION_AVAILABLE:
+        criterion = get_loss_function(
+            loss_type=args.loss,
+            class_weights=class_weights,
+            focal_gamma=args.focal_gamma,
+            label_smoothing=args.label_smoothing if args.loss in ['smooth', 'combined'] else 0.0,
+            device=str(device)
+        )
+        logger.info(f"Using {args.loss} loss function")
+    else:
+        if class_weights is not None:
+            criterion = nn.CrossEntropyLoss(weight=class_weights)
+        else:
+            criterion = nn.CrossEntropyLoss()
+        logger.info("Using standard CrossEntropy loss")
+    
+    # Setup optimizer with fine-tuning learning rate if specified
     train_lr = args.fine_tune_lr if (args.pretrained_model and args.fine_tune_lr) else args.learning_rate
-    optimizer = optim.Adam(model.parameters(), lr=train_lr)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+    optimizer = optim.Adam(model.parameters(), lr=train_lr, weight_decay=1e-5)
+    
+    # Setup learning rate scheduler
+    if args.scheduler == 'cosine':
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
+        logger.info("Using CosineAnnealingLR scheduler")
+    elif args.scheduler == 'plateau':
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, verbose=True)
+        logger.info("Using ReduceLROnPlateau scheduler")
+    else:
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+        logger.info("Using StepLR scheduler")
     
     if args.pretrained_model:
         logger.info(f"Fine-tuning learning rate: {train_lr} (from scratch: {args.learning_rate})")
+    else:
+        logger.info(f"Initial learning rate: {train_lr}")
     
     start_epoch = 0
     if args.resume:
@@ -774,12 +1057,25 @@ def main():
         logger.info(f"{'='*60}")
         
         # Train
-        train_metrics = train_epoch(model, train_loader, optimizer, criterion, device, epoch + 1)
+        train_metrics = train_epoch(
+            model, train_loader, optimizer, criterion, device, epoch + 1,
+            use_mixup=args.mixup,
+            mixup_alpha=args.mixup_alpha
+        )
         logger.info(f"Train - Loss: {train_metrics['loss']:.4f}, Acc: {train_metrics['accuracy']:.2f}%")
         
         # Validate
         val_metrics = validate(model, val_loader, criterion, device)
         logger.info(f"Val   - Loss: {val_metrics['loss']:.4f}, Acc: {val_metrics['accuracy']:.2f}%")
+        
+        # Update learning rate
+        if args.scheduler == 'plateau':
+            scheduler.step(val_metrics['accuracy'])
+        else:
+            scheduler.step()
+        
+        current_lr = optimizer.param_groups[0]['lr']
+        logger.info(f"Current LR: {current_lr:.6f}")
         
         # Save checkpoint
         checkpoint_path = CHECKPOINTS_DIR / f"checkpoint_epoch_{epoch + 1}.pth"
@@ -790,8 +1086,6 @@ def main():
             best_val_acc = val_metrics['accuracy']
             torch.save(model.state_dict(), TRAINED_MODEL_PATH)
             logger.info(f"✓ New best model saved (Val Acc: {best_val_acc:.2f}%)")
-        
-        scheduler.step()
     
     logger.info("\n" + "="*60)
     logger.info("Training completed!")
@@ -804,8 +1098,8 @@ def main():
     connector = DictionaryConnector(DICTIONARY_PATH)
     
     # Example prediction
-    if len(val_dataset) > 0:
-        sample_landmarks, sample_label, sample_sign = val_dataset[0]
+    if len(val_subset) > 0:
+        sample_landmarks, sample_label, sample_sign = val_subset[0]
         predictions = connector.predict_with_meaning(
             model,
             sample_landmarks,

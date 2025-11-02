@@ -1,0 +1,60 @@
+{
+  "overall_accuracy": 98.54280510018215,
+  "top_k_accuracy": 100.0,
+  "per_class_accuracy": {
+    "656": 89.39393939393939,
+    "817": 100.0,
+    "670": 92.85714285714286,
+    "1194": 100.0
+  },
+  "class_counts": {
+    "656": 66,
+    "817": 21,
+    "670": 14,
+    "1194": 448
+  },
+  "worst_classes": [
+    {
+      "class_idx": 656,
+      "sign": "I",
+      "accuracy": 89.39393939393939
+    },
+    {
+      "class_idx": 670,
+      "sign": "IN",
+      "accuracy": 92.85714285714286
+    },
+    {
+      "class_idx": 817,
+      "sign": "ME",
+      "accuracy": 100.0
+    },
+    {
+      "class_idx": 1194,
+      "sign": "SON",
+      "accuracy": 100.0
+    }
+  ],
+  "best_classes": [
+    {
+      "class_idx": 1194,
+      "sign": "SON",
+      "accuracy": 100.0
+    },
+    {
+      "class_idx": 817,
+      "sign": "ME",
+      "accuracy": 100.0
+    },
+    {
+      "class_idx": 670,
+      "sign": "IN",
+      "accuracy": 92.85714285714286
+    },
+    {
+      "class_idx": 656,
+      "sign": "I",
+      "accuracy": 89.39393939393939
+    }
+  ]
+}

@@ -104,7 +104,7 @@ npm run dev
 
 ### GSL Sign Recognition Model
 
-Our model is fine-tuned on Ghanaian Sign Language (GSL) with **95.45% validation accuracy** across **1,485 sign classes**.
+Our model is fine-tuned on Ghanaian Sign Language (GSL) with **98.18% validation accuracy** and **98.54% overall test accuracy** across **1,485 sign classes** using the FullI3D architecture.
 
 **Training Pipeline:**
 
@@ -112,8 +112,21 @@ Our model is fine-tuned on Ghanaian Sign Language (GSL) with **95.45% validation
 # Preprocess landmarks (one-time)
 python scripts/preprocess_landmarks.py
 
-# Fine-tune with WLASL pretrained model
+# Fine-tune with FullI3D architecture (recommended)
 python scripts/train_edusign_gsl.py \
+    --architecture i3d \
+    --pretrained-model backend/app/models/pretrained_wlasl.pth \
+    --epochs 50 \
+    --batch-size 8 \
+    --base-channels 64 \
+    --fine-tune-lr 0.0001 \
+    --augment --oversample \
+    --loss focal --class-weights \
+    --scheduler cosine
+
+# Alternative: SimpleI3D (faster training)
+python scripts/train_edusign_gsl.py \
+    --architecture simple \
     --pretrained-model backend/app/models/pretrained_wlasl.pth \
     --epochs 50 \
     --batch-size 16 \
@@ -123,15 +136,29 @@ python scripts/train_edusign_gsl.py \
 python scripts/inference_edusign_gsl.py \
     --model backend/app/models/edusign_gsl_finetuned.pth \
     --input <frame.jpg>
+
+# Detailed evaluation
+python scripts/evaluate_model_detailed.py \
+    --model backend/app/models/edusign_gsl_finetuned.pth \
+    --output-dir evaluation_results
 ```
 
 ### Model Performance
 
-- **Validation Accuracy**: 95.45%
+**FullI3D Architecture (Current Best):**
+- **Validation Accuracy**: 98.18% (best), 97.27% (final)
+- **Test Accuracy**: 98.54%
+- **Top-5 Accuracy**: 100.00%
 - **Classes**: 1,485 GSL signs
-- **Architecture**: Simplified I3D (LSTM-based)
+- **Architecture**: FullI3D (3D Convolutions)
 - **Base Model**: WLASL pretrained on 2,000 ASL signs
-- **Model Size**: 47MB
+- **Model Size**: 46MB
+- **Training Accuracy**: 99.54%
+
+**Previous SimpleI3D (Baseline):**
+- **Validation Accuracy**: 95.45%
+- **Architecture**: Simplified I3D (LSTM-based)
+- **Improvement**: +2.73% with FullI3D
 
 ---
 
@@ -192,7 +219,7 @@ EduSign AI aims to become a **universal AI interpreter** that supports:
 
 ## 👥 Team
 
-**Team Cbreve** — Innovators passionate about AI, accessibility, and social impact.
+**Cbreve** — Innovators passionate about AI, accessibility, and social impact.
 
 ---
 
