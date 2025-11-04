@@ -166,12 +166,15 @@ def calculate_class_weights(dataset) -> torch.Tensor:
         labels.append(label)
     
     class_counts = Counter(labels)
-    num_classes = len(class_counts)
+    # Use dataset.num_classes instead of len(class_counts)
+    # because labels are indices that can be any value up to num_classes-1
+    num_classes = dataset.num_classes if hasattr(dataset, 'num_classes') else len(class_counts)
     
     # Calculate weights: total_samples / (num_classes * class_count)
     total_samples = sum(class_counts.values())
-    weights = torch.zeros(num_classes)
+    weights = torch.ones(num_classes)  # Initialize with 1.0 for all classes
     
+    # Only update weights for classes that appear in the dataset
     for class_idx, count in class_counts.items():
         if count > 0:
             weights[class_idx] = total_samples / (num_classes * count)
@@ -179,7 +182,8 @@ def calculate_class_weights(dataset) -> torch.Tensor:
             weights[class_idx] = 1.0
     
     # Normalize
-    weights = weights / weights.mean()
+    if weights.sum() > 0:
+        weights = weights / weights.mean()
     
     return weights
 
