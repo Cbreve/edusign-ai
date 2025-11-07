@@ -75,16 +75,56 @@ class SignRecognitionService:
             
             # Load model
             if MODEL_PATH.exists():
-                # Import model architecture
+                # Import model architectures
                 import sys
                 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
                 from train_edusign_gsl import SimpleI3D, MediaPipeLandmarkExtractor
                 
+                # Try to import FullI3D
+                try:
+                    from scripts.i3d_architecture import FullI3D, HybridI3D
+                    I3D_AVAILABLE = True
+                except ImportError:
+                    I3D_AVAILABLE = False
+                    FullI3D = None
+                    HybridI3D = None
+                
                 num_classes = len(self.idx_to_sign)
-                self.model = SimpleI3D(input_features=225, num_classes=num_classes, hidden_dim=512)
+                
+                # Load checkpoint to detect architecture
+                checkpoint = torch.load(MODEL_PATH, map_location=self.device)
+                state_dict = checkpoint.get('model_state_dict', checkpoint) if isinstance(checkpoint, dict) else checkpoint
+                
+                # Detect architecture from checkpoint keys
+                has_conv3d = any('conv3d' in k.lower() or '3d' in k.lower() or 'i3d' in k.lower() for k in state_dict.keys())
+                has_lstm = any('lstm' in k.lower() for k in state_dict.keys())
+                
+                # Determine architecture
+                if has_conv3d and I3D_AVAILABLE:
+                    # FullI3D or HybridI3D
+                    if has_lstm:
+                        # HybridI3D
+                        logger.info("Detected HybridI3D architecture")
+                        self.model = HybridI3D(
+                            input_features=225,
+                            num_classes=num_classes,
+                            base_channels=64
+                        )
+                    else:
+                        # FullI3D
+                        logger.info("Detected FullI3D architecture")
+                        self.model = FullI3D(
+                            input_features=225,
+                            num_classes=num_classes,
+                            base_channels=64,
+                            depth_factor=1.0
+                        )
+                else:
+                    # SimpleI3D (default/fallback)
+                    logger.info("Detected SimpleI3D architecture (or I3D not available)")
+                    self.model = SimpleI3D(input_features=225, num_classes=num_classes, hidden_dim=512)
                 
                 # Load weights
-                checkpoint = torch.load(MODEL_PATH, map_location=self.device)
                 if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
                     self.model.load_state_dict(checkpoint['model_state_dict'])
                 else:
@@ -155,10 +195,11 @@ class SignRecognitionService:
                 
                 # Get meaning from dictionary
                 meaning = "No meaning found"
-                for entry in self.dictionary:
-                    if entry['sign'] == sign:
-                        meaning = entry.get('meaning', 'No meaning found')
-                        break
+                if self.dictionary:
+                    for entry in self.dictionary:
+                        if entry['sign'] == sign:
+                            meaning = entry.get('meaning', 'No meaning found')
+                            break
                 
                 predictions.append({
                     'sign': sign,
